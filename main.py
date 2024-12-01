@@ -3,7 +3,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+from transformers import AutoModel, AutoTokenizer
 import torch.nn.functional as F
+from swiss_army_llama import get_embedding_vector_for_string
 import matplotlib.pyplot as plt
 
 # Global constants, TODO: edit based on model architecture/dataset/task
@@ -12,6 +14,53 @@ embedding_dim = 2
 input_dim = 2
 hidden_dim = 4
 K = 3
+
+model_name = "meta-llama/LLaMA-7B-hf"
+batch_size = 16
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModel.from_pretrained(model_name).to(device)
+
+class PreferenceEmbeddingDataset(Dataset):
+    def __init__(self, preferences):
+        """
+        preferences: List of tuples (prompt, positive, negative)
+        """
+        self.preferences = preferences
+
+    def __len__(self):
+        return len(self.preferences)
+
+    def __getitem__(self, idx):
+        prompt, positive, negative = self.preferences[idx]
+        return prompt, positive, negative
+
+# Function to process embeddings
+def get_embeddings_swiss_army(text_list, model, tokenizer):
+    """
+    Use get_embedding_vector_for_string to extract embeddings for a list of strings.
+    """
+    embeddings = [get_embedding_vector_for_string(text, model=model, tokenizer=tokenizer) for text in text_list]
+    return torch.stack(embeddings)
+
+# Preference pairs pipeline
+def preference_pairs_to_tensors_swiss_army(preferences, model, tokenizer):
+    """
+    Convert preference pairs to tensor embeddings using swiss_army_llama.
+    Returns: Tensor of shape (number_of_pairs, 2, embedding_dim)
+    """
+    dataset = PreferenceEmbeddingDataset(preferences)
+    loader = DataLoader(dataset, batch_size=16, shuffle=False)
+
+    embeddings_list = []
+    for batch in loader:
+        prompts, positives, negatives = zip(*batch)
+        positive_embeddings = get_embeddings_swiss_army(positives, model, tokenizer)
+        negative_embeddings = get_embeddings_swiss_army(negatives, model, tokenizer)
+        embeddings_list.append(torch.stack([positive_embeddings, negative_embeddings], dim=1))
+
+    return torch.cat(embeddings_list, dim=0)
 
 # Learn transformation f, prototypes P, and user weights w_i
 class PreferenceNet(nn.Module):
@@ -30,6 +79,7 @@ class PreferenceNet(nn.Module):
     
     def forward(self, x):
         return self.network(x)
+    
 
 # Dataset class wiht preferences pairs + user IDs (@emily each part of the preference pair is like f(response, prompt))
 class PreferenceDataset(Dataset):
