@@ -60,6 +60,18 @@ def extract_openai_data(example):
     user_id = example["worker"]
     return {"positive": torch.cat(positive, prompt), "negative": torch.cat(negative, prompt), "user_id": user_id}
 
+def extract_chatbotarena_data(example):
+    winner = example["winner"]
+    loser = "conversation_b" if winner == "conversation_a" else "conversation_a"
+
+    pos_prompt = get_embedding_vector_for_string(example[winner][0]["content"], model, tokenizer)
+    pos_response = get_embedding_vector_for_string(example[winner][1]["content"], model, tokenizer)
+    neg_prompt = get_embedding_vector_for_string(example[loser][0]["content"], model, tokenizer)
+    neg_response = get_embedding_vector_for_string(example[loser][1]["content"], model, tokenizer)
+    user_id = example["judge"]
+
+    return {"positive": torch.cat(pos_response, pos_prompt), "negative": torch.cat(neg_response, neg_prompt), "user_id": user_id}
+
 def retrieve_info_from_data(data):
     positives = torch.tensor([item["positive"] for item in data])
     negatives = torch.tensor([item["negative"] for item in data])
@@ -192,6 +204,11 @@ if __name__ == "__main__":
     # Use OpenAI dataset
     dataset = load_dataset("openai/summarize_from_feedback", "comparisons")
     extracted_data = dataset.map(extract_openai_data)
+
+    # Use Chatbot Arena dataset
+    dataset = load_dataset("chatbot_arena_conversation")
+    extracted_data = dataset.map(extract_chatbotarena_data)
+
     features, preferences, user_ids = retrieve_info_from_data(extracted_data)
     
     dataset = PreferenceDataset(features, preferences, user_ids)
