@@ -7,6 +7,7 @@ from transformers import AutoModel, AutoTokenizer
 import torch.nn.functional as F
 from swiss_army_llama import get_embedding_vector_for_string
 import matplotlib.pyplot as plt
+from datasets import load_dataset
 
 # Global constants, TODO: edit based on model architecture/dataset/task
 metric_space_dim = 2
@@ -22,20 +23,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModel.from_pretrained(model_name).to(device)
 
-class PreferenceEmbeddingDataset(Dataset):
-    def __init__(self, preferences):
-        """
-        preferences: List of tuples (prompt, positive, negative)
-        """
-        self.preferences = preferences
-
-    def __len__(self):
-        return len(self.preferences)
-
-    def __getitem__(self, idx):
-        prompt, positive, negative = self.preferences[idx]
-        return prompt, positive, negative
-
 # Function to process embeddings
 def get_embeddings_swiss_army(text_list, model, tokenizer):
     """
@@ -43,24 +30,6 @@ def get_embeddings_swiss_army(text_list, model, tokenizer):
     """
     embeddings = [get_embedding_vector_for_string(text, model=model, tokenizer=tokenizer) for text in text_list]
     return torch.stack(embeddings)
-
-# Preference pairs pipeline
-def preference_pairs_to_tensors_swiss_army(preferences, model, tokenizer):
-    """
-    Convert preference pairs to tensor embeddings using swiss_army_llama.
-    Returns: Tensor of shape (number_of_pairs, 2, embedding_dim)
-    """
-    dataset = PreferenceEmbeddingDataset(preferences)
-    loader = DataLoader(dataset, batch_size=16, shuffle=False)
-
-    embeddings_list = []
-    for batch in loader:
-        prompts, positives, negatives = zip(*batch)
-        positive_embeddings = get_embeddings_swiss_army(positives, model, tokenizer)
-        negative_embeddings = get_embeddings_swiss_army(negatives, model, tokenizer)
-        embeddings_list.append(torch.stack([positive_embeddings, negative_embeddings], dim=1))
-
-    return torch.cat(embeddings_list, dim=0)
 
 # Learn transformation f, prototypes P, and user weights w_i
 class PreferenceNet(nn.Module):
@@ -79,7 +48,26 @@ class PreferenceNet(nn.Module):
     
     def forward(self, x):
         return self.network(x)
-    
+
+def extract_openai_data(example):
+    prompt = example["info"]["post"]
+    summaries = example["summaries"]
+    chosen_idx = example["choice"]
+
+    positive = get_embedding_vector_for_string(summaries[chosen_idx]["text"] + prompt, model, tokenizer)
+    negative = get_embedding_vector_for_string(summaries[1 - chosen_idx]["text"] + prompt, model, tokenizer)
+    user_id = example["worker"]
+    return {"positive": positive, "negative": negative, "user_id": user_id}
+
+def retrieve_info_from_data(data):
+    positives = torch.tensor([item["positive"] for item in data])
+    negatives = torch.tensor([item["negative"] for item in data])
+    user_ids = torch.tensor([item["user_id"] for item in data])
+
+    features = torch.cat((positives, negatives), dim=0)
+    preferences = torch.tensor([(i, i + len(data)) for i in range(len(data))], dtype=torch.int64)
+
+    return features, preferences, user_ids
 
 # Dataset class wiht preferences pairs + user IDs (@emily each part of the preference pair is like f(response, prompt))
 class PreferenceDataset(Dataset):
@@ -199,6 +187,11 @@ if __name__ == "__main__":
     # Generate synthetic data
     features, preferences, user_ids, true_prototypes, true_ideal_points = generate_synthetic_data_with_prototypes(
         n_samples=1000, feature_dim=metric_space_dim, n_pairs_per_user=1000, n_users=50*K, K=K)
+
+    # Use OpenAI dataset
+    dataset = load_dataset("openai/summarize_from_feedback", "comparisons")
+    extracted_data = dataset.map(extract_openai_data)
+    features, preferences, user_ids = retrieve_info_from_data(extracted_data)
     
     dataset = PreferenceDataset(features, preferences, user_ids)
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
