@@ -54,10 +54,11 @@ def extract_openai_data(example):
     summaries = example["summaries"]
     chosen_idx = example["choice"]
 
-    positive = get_embedding_vector_for_string(summaries[chosen_idx]["text"] + prompt, model, tokenizer)
-    negative = get_embedding_vector_for_string(summaries[1 - chosen_idx]["text"] + prompt, model, tokenizer)
+    prompt = get_embedding_vector_for_string(prompt, model, tokenizer)
+    positive = get_embedding_vector_for_string(summaries[chosen_idx]["text"], model, tokenizer)
+    negative = get_embedding_vector_for_string(summaries[1 - chosen_idx]["text"], model, tokenizer)
     user_id = example["worker"]
-    return {"positive": positive, "negative": negative, "user_id": user_id}
+    return {"positive": torch.cat(positive, prompt), "negative": torch.cat(negative, prompt), "user_id": user_id}
 
 def retrieve_info_from_data(data):
     positives = torch.tensor([item["positive"] for item in data])
