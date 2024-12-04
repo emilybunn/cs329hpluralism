@@ -11,6 +11,8 @@ from datasets import load_dataset
 from scipy.spatial import ConvexHull
 import gc
 
+from sentence_transformers import SentenceTransformer
+
 # Global constants, TODO: edit based on model architecture/dataset/task
 metric_space_dim = 2
 embedding_dim = 2
@@ -22,8 +24,10 @@ model_name = "meta-llama/LLaMA-7B-hf"
 batch_size = 16
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModel.from_pretrained(model_name).to(device)
+# tokenizer = AutoTokenizer.from_pretrained(model_name)
+# model = AutoModel.from_pretrained(model_name).to(device)
+
+model = SentenceTransformer(model_name)
 
 def get_embedding_vector_for_string(prompt, model, tokenizer):
     # Tokenize the input string and move to the model's device
@@ -45,9 +49,14 @@ def extract_openai_data(example):
     summaries = example["summaries"]
     chosen_idx = example["choice"]
 
-    prompt = get_embedding_vector_for_string(prompt, model, tokenizer)
-    positive = get_embedding_vector_for_string(summaries[chosen_idx]["text"], model, tokenizer)
-    negative = get_embedding_vector_for_string(summaries[1 - chosen_idx]["text"], model, tokenizer)
+    # prompt = get_embedding_vector_for_string(prompt, model, tokenizer)
+    # positive = get_embedding_vector_for_string(summaries[chosen_idx]["text"], model, tokenizer)
+    # negative = get_embedding_vector_for_string(summaries[1 - chosen_idx]["text"], model, tokenizer)
+    
+    prompt = model.encode(prompt)
+    positive = model.encode(summaries[chosen_idx]["text"])
+    negative = model.encode(summaries[1 - chosen_idx]["text"])
+    
     user_id = example["worker"]
 
     return {"prompt": prompt, "positive": positive, "negative": negative, "user_id": user_id}
