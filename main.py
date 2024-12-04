@@ -17,20 +17,61 @@ input_dim = 2
 hidden_dim = 4
 K = 3
 
-# model_name = "meta-llama/LLaMA-7B-hf"
-# batch_size = 16
+model_name = "meta-llama/LLaMA-7B-hf"
+batch_size = 16
 
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# tokenizer = AutoTokenizer.from_pretrained(model_name)
-# model = AutoModel.from_pretrained(model_name).to(device)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModel.from_pretrained(model_name).to(device)
 
-# Function to process embeddings
-# def get_embeddings_swiss_army(text_list, model, tokenizer):
-#     """
-#     Use get_embedding_vector_for_string to extract embeddings for a list of strings.
-#     """
-#     embeddings = [get_embedding_vector_for_string(text, model=model, tokenizer=tokenizer) for text in text_list]
-#     return torch.stack(embeddings)
+def get_embedding_vector_for_string(prompt, model, tokenizer):
+    # Tokenize the input string and move to the model's device
+    seq_ids = tokenizer(prompt, return_tensors='pt', truncation=True, padding=True).to(model.device)["input_ids"]
+
+    # Compute the embeddings
+    with torch.no_grad():
+        output = model(seq_ids)
+        embedding = output["last_hidden_state"].mean(dim=1).squeeze()
+
+    del seq_ids, output
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    return embedding  # Return detached embedding
+
+def extract_openai_data(example):
+    prompt = example["info"]["post"]
+    summaries = example["summaries"]
+    chosen_idx = example["choice"]
+
+    prompt = get_embedding_vector_for_string(prompt, model, tokenizer)
+    positive = get_embedding_vector_for_string(summaries[chosen_idx]["text"], model, tokenizer)
+    negative = get_embedding_vector_for_string(summaries[1 - chosen_idx]["text"], model, tokenizer)
+    user_id = example["worker"]
+
+    return {"prompt": prompt, "positive": positive, "negative": negative, "user_id": user_id}
+
+def extract_chatbotarena_data(example):
+    winner = example["winner"]
+    loser = "conversation_b" if winner == "conversation_a" else "conversation_a"
+
+    prompt = get_embedding_vector_for_string(example[winner][0]["content"], model, tokenizer)
+    positive = get_embedding_vector_for_string(example[winner][1]["content"], model, tokenizer)
+    negative = get_embedding_vector_for_string(example[loser][1]["content"], model, tokenizer)
+    user_id = example["judge"]
+
+    return {"prompt": prompt, "positive": positive, "negative": negative, "user_id": user_id}
+
+def retrieve_info_from_data(data, with_prompt: bool=False):
+    if with_prompt:
+        positives = torch.stack([torch.cat((item["positive"], item["prompt"]), dim=1) for item in data])
+        negatives = torch.stack([torch.cat((item["negative"], item["prompt"]), dim=1) for item in data])
+    else:
+        positives = torch.stack([item["positive"] for item in data])
+        negatives = torch.stack([item["negative"] for item in data])
+
+    datapoints = positives - negatives
+    return datapoints
 
 # Learn transformation f, prototypes P, and user weights w_i
 class PreferenceNet(nn.Module):
@@ -50,38 +91,17 @@ class PreferenceNet(nn.Module):
     def forward(self, x):
         return self.network(x)
 
-# def extract_openai_data(example):
-#     prompt = example["info"]["post"]
-#     summaries = example["summaries"]
-#     chosen_idx = example["choice"]
 
-#     prompt = get_embedding_vector_for_string(prompt, model, tokenizer)
-#     positive = get_embedding_vector_for_string(summaries[chosen_idx]["text"], model, tokenizer)
-#     negative = get_embedding_vector_for_string(summaries[1 - chosen_idx]["text"], model, tokenizer)
-#     user_id = example["worker"]
-#     return {"positive": torch.cat(positive, prompt), "negative": torch.cat(negative, prompt), "user_id": user_id}
+def retrieve_info_from_data(data):
+    positives = torch.tensor([item["positive"] for item in data])
+    negatives = torch.tensor([item["negative"] for item in data])
+    user_ids = torch.tensor([item["user_id"] for item in data])
 
-# def extract_chatbotarena_data(example):
-#     winner = example["winner"]
-#     loser = "conversation_b" if winner == "conversation_a" else "conversation_a"
+    features = torch.cat((positives, negatives), dim=0)
+    preferences = torch.tensor([(i, i + len(data)) for i in range(len(data))], dtype=torch.int64)
 
-#     pos_prompt = get_embedding_vector_for_string(example[winner][0]["content"], model, tokenizer)
-#     pos_response = get_embedding_vector_for_string(example[winner][1]["content"], model, tokenizer)
-#     neg_prompt = get_embedding_vector_for_string(example[loser][0]["content"], model, tokenizer)
-#     neg_response = get_embedding_vector_for_string(example[loser][1]["content"], model, tokenizer)
-#     user_id = example["judge"]
+    return features, preferences, user_ids
 
-#     return {"positive": torch.cat(pos_response, pos_prompt), "negative": torch.cat(neg_response, neg_prompt), "user_id": user_id}
-
-# def retrieve_info_from_data(data):
-#     positives = torch.tensor([item["positive"] for item in data])
-#     negatives = torch.tensor([item["negative"] for item in data])
-#     user_ids = torch.tensor([item["user_id"] for item in data])
-
-#     features = torch.cat((positives, negatives), dim=0)
-#     preferences = torch.tensor([(i, i + len(data)) for i in range(len(data))], dtype=torch.int64)
-
-#     return features, preferences, user_ids
 
 # Dataset class wiht preferences pairs + user IDs (@emily each part of the preference pair is like f(response, prompt))
 class PreferenceDataset(Dataset):
