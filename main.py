@@ -5,13 +5,12 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoModel, AutoTokenizer
 import torch.nn.functional as F
-# from swiss_army_llama import get_embedding_vector_for_string
 import matplotlib.pyplot as plt
 from datasets import load_dataset
 from scipy.spatial import ConvexHull
 import gc
 
-from sentence_transformers import SentenceTransformer
+from utils import extract_openai_data, extract_chatbotarena_data
 
 # Global constants, TODO: edit based on model architecture/dataset/task
 metric_space_dim = 2
@@ -24,10 +23,36 @@ model_name = "meta-llama/LLaMA-7B-hf"
 batch_size = 16
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# tokenizer = AutoTokenizer.from_pretrained(model_name)
-# model = AutoModel.from_pretrained(model_name).to(device)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModel.from_pretrained(model_name).to(device)
 
-model = SentenceTransformer(model_name)
+# Learn transformation f, prototypes P, and user weights w_i
+class PreferenceNet(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_users, num_prototypes):
+        super(PreferenceNet, self).__init__()
+        self.network = nn.Sequential(
+            nn.Linear(input_dim, output_dim, bias=False)
+        )
+        
+        self.prototypes = nn.Parameter(torch.randn(num_prototypes, embedding_dim))
+        self.user_weights = nn.Parameter(torch.rand(num_users, num_prototypes))
+        
+    def get_user_ideal_point(self, user_id):
+        w_i = F.softmax(self.user_weights[user_id], dim=0)
+        return torch.matmul(w_i, self.prototypes)
+    
+    def forward(self, x):
+        return self.network(x)
+
+def retrieve_info_from_data(data):
+    positives = torch.tensor([item["positive"] for item in data])
+    negatives = torch.tensor([item["negative"] for item in data])
+    user_ids = torch.tensor([item["user_id"] for item in data])
+
+    features = torch.cat((positives, negatives), dim=0)
+    preferences = torch.tensor([(i, i + len(data)) for i in range(len(data))], dtype=torch.int64)
+
+    return features, preferences, user_ids
 
 def get_embedding_vector_for_string(prompt, model, tokenizer):
     # Tokenize the input string and move to the model's device
@@ -49,14 +74,9 @@ def extract_openai_data(example):
     summaries = example["summaries"]
     chosen_idx = example["choice"]
 
-    # prompt = get_embedding_vector_for_string(prompt, model, tokenizer)
-    # positive = get_embedding_vector_for_string(summaries[chosen_idx]["text"], model, tokenizer)
-    # negative = get_embedding_vector_for_string(summaries[1 - chosen_idx]["text"], model, tokenizer)
-    
-    prompt = model.encode(prompt)
-    positive = model.encode(summaries[chosen_idx]["text"])
-    negative = model.encode(summaries[1 - chosen_idx]["text"])
-    
+    prompt = get_embedding_vector_for_string(prompt, model, tokenizer)
+    positive = get_embedding_vector_for_string(summaries[chosen_idx]["text"], model, tokenizer)
+    negative = get_embedding_vector_for_string(summaries[1 - chosen_idx]["text"], model, tokenizer)
     user_id = example["worker"]
 
     return {"prompt": prompt, "positive": positive, "negative": negative, "user_id": user_id}
@@ -71,47 +91,6 @@ def extract_chatbotarena_data(example):
     user_id = example["judge"]
 
     return {"prompt": prompt, "positive": positive, "negative": negative, "user_id": user_id}
-
-def retrieve_info_from_data(data, with_prompt: bool=False):
-    if with_prompt:
-        positives = torch.stack([torch.cat((item["positive"], item["prompt"]), dim=1) for item in data])
-        negatives = torch.stack([torch.cat((item["negative"], item["prompt"]), dim=1) for item in data])
-    else:
-        positives = torch.stack([item["positive"] for item in data])
-        negatives = torch.stack([item["negative"] for item in data])
-
-    datapoints = positives - negatives
-    return datapoints
-
-# Learn transformation f, prototypes P, and user weights w_i
-class PreferenceNet(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_users, num_prototypes):
-        super(PreferenceNet, self).__init__()
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, output_dim, bias=False)
-        )
-        
-        self.prototypes = nn.Parameter(torch.randn(num_prototypes, embedding_dim))
-        self.user_weights = nn.Parameter(torch.rand(num_users, num_prototypes))
-        
-    def get_user_ideal_point(self, user_id):
-        w_i = F.softmax(self.user_weights[user_id], dim=0)
-        return torch.matmul(w_i, self.prototypes)
-    
-    def forward(self, x):
-        return self.network(x)
-
-
-def retrieve_info_from_data(data):
-    positives = torch.tensor([item["positive"] for item in data])
-    negatives = torch.tensor([item["negative"] for item in data])
-    user_ids = torch.tensor([item["user_id"] for item in data])
-
-    features = torch.cat((positives, negatives), dim=0)
-    preferences = torch.tensor([(i, i + len(data)) for i in range(len(data))], dtype=torch.int64)
-
-    return features, preferences, user_ids
-
 
 # Dataset class wiht preferences pairs + user IDs (@emily each part of the preference pair is like f(response, prompt))
 class PreferenceDataset(Dataset):
