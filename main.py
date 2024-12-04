@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from datasets import load_dataset
 from scipy.spatial import ConvexHull
+import gc
 
 # Global constants, TODO: edit based on model architecture/dataset/task
 metric_space_dim = 2
