@@ -75,6 +75,23 @@ def extract_chatbotarena_data(example):
 
     return {"prompt": prompt, "positive": positive, "negative": negative, "user_id": user_id}
 
+def extract_shp_data(example):
+    prompt = example["history"]
+    A = example["human_ref_A"]
+    B = example["human_ref_B"]
+    chosen_idx = int(example["labels"])
+
+    prompt = get_embedding_vector_for_string(prompt, model, tokenizer)
+    if chosen_idx == 1:
+        positive = get_embedding_vector_for_string(A, model, tokenizer)
+        negative = get_embedding_vector_for_string(B, model, tokenizer)
+    else:
+        positive = get_embedding_vector_for_string(B, model, tokenizer)
+        negative = get_embedding_vector_for_string(A, model, tokenizer)
+
+    user_id = None
+    return {"prompt": prompt, "positive": positive, "negative": negative, "user_id": user_id}
+
 def retrieve_info_from_data(data):
     positives = torch.stack([torch.cat((item["positive"].cpu(), item["prompt"].cpu()), dim=0) for item in data])
     negatives = torch.stack([torch.cat((item["negative"].cpu(), item["prompt"].cpu()), dim=0) for item in data])
@@ -387,6 +404,13 @@ if __name__ == "__main__":
     # dataset = load_dataset("chatbot_arena_conversation")
     # extracted_data = dataset.map(extract_chatbotarena_data)
 
+    # # Use StanfordNLP
+    # dataset = load_dataset("stanfordnlp/SHP")
+    # extracted_data = dataset.map(extract_shp_data)
+
+    # # Use Chatbot Arena dataset
+    # dataset = load_dataset("chatbot_arena_conversation")
+    # extracted_data = dataset.map(extract_chatbotarena_data)
     with open('chatbot_extracted_data.pkl', 'rb') as f:
         extracted_data = pickle.load(f)
 
