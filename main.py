@@ -75,6 +75,19 @@ def extract_chatbotarena_data(example):
 
     return {"prompt": prompt, "positive": positive, "negative": negative, "user_id": user_id}
 
+def extract_allenaipref_data(example):
+    prompt_content = example["prompt"]
+    prompt = ""
+    for msg in prompt_content:
+        prompt += f"{msg["role"]}: {msg["content"]}\n"
+
+    prompt = get_embedding_vector_for_string(prompt, model, tokenizer)
+    positive = get_embedding_vector_for_string(example["chosen"], model, tokenizer)
+    negative = get_embedding_vector_for_string(example["rejected"], model, tokenizer)
+    user_id = None
+
+    return {"prompt": prompt, "positive": positive, "negative": negative, "user_id": user_id}
+
 def extract_shp_data(example):
     prompt = example["history"]
     A = example["human_ref_A"]
@@ -408,9 +421,10 @@ if __name__ == "__main__":
     # dataset = load_dataset("stanfordnlp/SHP")
     # extracted_data = dataset.map(extract_shp_data)
 
-    # # Use Chatbot Arena dataset
-    # dataset = load_dataset("chatbot_arena_conversation")
-    # extracted_data = dataset.map(extract_chatbotarena_data)
+    # # Use AllenAI Preferences
+    # dataset = load_dataset("allenai/preference-test-sets")
+    # extracted_data = dataset.map(extract_allenaipref_data)
+    
     with open('chatbot_extracted_data.pkl', 'rb') as f:
         extracted_data = pickle.load(f)
 
